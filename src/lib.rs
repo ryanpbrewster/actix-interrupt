@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use actix::prelude::*;
+use futures::FutureExt;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -29,19 +30,24 @@ enum Command {
     Echo(usize),
     Interrupt,
 }
+type MyResult<T> = Result<T, MyErr>;
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum MyErr {
+    Interrupted,
+}
 impl Message for Command {
-    type Result = Result<usize, String>;
+    type Result = MyResult<usize>;
 }
 
 impl Handler<Command> for MyActor {
-    type Result = ResponseActFuture<Self, Result<usize, String>>;
+    type Result = ResponseFuture<MyResult<usize>>;
 
     fn handle(&mut self, msg: Command, _ctx: &mut Self::Context) -> Self::Result {
         println!("[{:?}] recv {:?}", SystemTime::now(), msg);
         match msg {
             Command::Interrupt => {
                 let g = self.generation.fetch_add(1, Ordering::Relaxed);
-                Box::pin(std::future::ready(Ok(g)).into_actor(self).map(|r, _, _| r))
+                Box::pin(std::future::ready(Ok(g)))
             }
             Command::Echo(n) => {
                 let (tx, rx) = futures::channel::oneshot::channel();
@@ -53,7 +59,7 @@ impl Handler<Command> for MyActor {
                         println!("[{:?}] {} sleeping...!", SystemTime::now(), n);
                         if signal.load(Ordering::Relaxed) != init {
                             println!("[{:?}] {} interrupted!", SystemTime::now(), n);
-                            let _ = tx.send(Err("interrupted".to_owned()));
+                            let _ = tx.send(Err(MyErr::Interrupted));
                             return;
                         }
                         std::thread::sleep(Duration::from_millis(10));
@@ -61,10 +67,7 @@ impl Handler<Command> for MyActor {
                     println!("[{:?}] {} done", SystemTime::now(), n);
                     let _ = tx.send(Ok(n));
                 });
-                Box::pin(
-                    rx.into_actor(self)
-                        .map(|r: Result<Result<usize, String>, _>, _, _| r.unwrap()),
-                )
+                Box::pin(rx.map(|r| r.unwrap()))
             }
         }
     }
@@ -72,7 +75,7 @@ impl Handler<Command> for MyActor {
 
 #[cfg(test)]
 mod test {
-    use crate::{Command, MyActor};
+    use crate::{Command, MyActor, MyErr};
     use actix::prelude::*;
     use std::time::Duration;
 
@@ -88,7 +91,7 @@ mod test {
         let m1 = my_actor.send(Command::Echo(1_000));
         actix_rt::time::delay_for(Duration::from_millis(100)).await;
         let m2 = my_actor.send(Command::Interrupt);
-        assert_eq!(m1.await.unwrap(), Err("interrupted".to_owned()));
+        assert_eq!(m1.await.unwrap(), Err(MyErr::Interrupted));
         assert_eq!(m2.await.unwrap(), Ok(0));
     }
 }
