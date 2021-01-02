@@ -9,4 +9,5 @@ edition = "2018"
 [dependencies]
 actix = "0.10"
 actix-rt = "1.1"
-tokio = { version = "1.0", features = ["time"] }
+threadpool = "1.8"
+futures = "0.3"
